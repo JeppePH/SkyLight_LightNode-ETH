@@ -23,24 +23,28 @@ extern "C" uint32_t set_arm_clock(uint32_t frequency);
 //  Configuration
 // --------------------------------------------------------------------------
 // FastLED
-#define NUM_LEDS_PER_STRIP 170
+#define NUM_LEDS_PER_STRIP 240
 #define NUM_STRIPS 5
 #define CHANNELS_PER_LED 3
 #define PIN_LED_STATUS 35
 #define PIN_LED_DMX 34
 #define PIN_LED_POLL 33
 
-const bool DEBUG = true;
+const bool DEBUG = false;
+
+const int universes_by_out = 2; // Adjust this as needed
+const int startUniverse = 0;    // Starting universe number
+const int maxUniverses = NUM_STRIPS * universes_by_out;
+
+unsigned long lastUpdate = 0;            // Timestamp of the last LED update
+const unsigned long updateInterval = 30; // Update interval in milliseconds
 
 // Data arrays and buffer
 CRGB ledsStrip[NUM_STRIPS][NUM_LEDS_PER_STRIP];
-CRGB ledsBuffer[NUM_STRIPS][NUM_LEDS_PER_STRIP];
+CRGB ledsBuffer[NUM_STRIPS][2][NUM_LEDS_PER_STRIP]; // Double buffering
+int currentBuffer = 0;                              // Index of the buffer that is currently being written to
 
-const uint8_t PIN_LED_DATA[] = {23, 22, 21, 20, 19}; 
-
-const int universes_by_out = 2;   // Adjust this as needed
-const int startUniverse = 0;      // Starting universe number
-const int maxUniverses = NUM_STRIPS * universes_by_out;
+const uint8_t PIN_LED_DATA[] = {23, 22, 21, 20, 19};
 
 // ArtNet setup
 Artnet artnet;
@@ -75,14 +79,15 @@ EthernetUDP udp; // Declare the UDP object globally
 // --------------------------------------------------------------------------
 bool initEthernet();
 void onDmxFrame(uint16_t universe, uint16_t length, uint8_t sequence, uint8_t *data, IPAddress remoteIP);
+void updateLEDs();
 
 // --------------------------------------------------------------------------
 //  Main Setup
 // --------------------------------------------------------------------------
 void setup()
 {
-  set_arm_clock(160000000); // 600 MHz max default // 160mhz just worked
-  delay(2000);
+  set_arm_clock(600000000); // Set Teensy clock to 600 MHz
+  delay(1000);
   Serial.begin(115200);
   while (!Serial && millis() < 4000)
   {
@@ -111,7 +116,8 @@ void setup()
   // It's important to add these before doing anything with Ethernet so no events are missed.
 
   // Listen for link changes
-  Ethernet.onLinkState([](bool state) {
+  Ethernet.onLinkState([](bool state)
+                       {
     if (state) {
       // Link is up
       digitalWrite(PIN_LED_STATUS, HIGH);  // Turn STATUS LED on
@@ -120,9 +126,8 @@ void setup()
       // Link is down
       digitalWrite(PIN_LED_STATUS, LOW);   // Turn STATUS LED off
       printf("[Ethernet] Link OFF\r\n");
-    }
-  });
-                         
+    } });
+
   // Listen for address changes
   Ethernet.onAddressChanged([]()
                             {
@@ -213,69 +218,52 @@ bool initEthernet()
 // --------------------------------------------------------------------------
 //  Main Program
 // --------------------------------------------------------------------------
-void loop()
-{
-  digitalWrite(PIN_LED_DMX, LOW);
-  digitalWrite(PIN_LED_POLL, LOW);
-
-  // Handle ArtNet date
-  uint16_t r = artnet.read();
-  if (r == ART_POLL)
-  {
-    digitalWrite(PIN_LED_POLL, HIGH);
-    delay(100); // ToDo: Make a timerinterrupt to blink the led for a period
-  }
-  if (r == ART_DMX)
-  {
-    digitalWrite(PIN_LED_DMX, HIGH);
-    // print out our data
-    Serial.print("universe number = ");
-    Serial.print(artnet.getUniverse());
-    Serial.print("\tdata length = ");
-    Serial.print(artnet.getLength());
-    Serial.print("\tsequence n0. = ");
-    Serial.println(artnet.getSequence());
-    Serial.print("DMX data: ");
-    for (int i = 0; i < artnet.getLength(); i++)
-    {
-      Serial.print(artnet.getDmxFrame()[i]);
-      Serial.print("  ");
+void loop() {
+    unsigned long currentTime = millis();
+    if (currentTime - lastUpdate >= updateInterval) {
+        updateLEDs();
+        lastUpdate = currentTime;
     }
-    Serial.println();
-  }
+
+    // Handle ArtNet data
+    uint16_t r = artnet.read();
+    if (r == ART_DMX) {
+        digitalWrite(PIN_LED_DMX, HIGH);
+        delay(1); // Minimal delay to flash LED
+        digitalWrite(PIN_LED_DMX, LOW);
+    }
 }
 
 // --------------------------------------------------------------------------
 //  Functions
 // --------------------------------------------------------------------------
-void onDmxFrame(uint16_t universe, uint16_t length, uint8_t sequence, uint8_t *data, IPAddress remoteIP)
-{
-    // Debug: Print the universe and calculated stripIndex
-    Serial.print("Received universe: ");
-    Serial.println(universe);
-
+void onDmxFrame(uint16_t universe, uint16_t length, uint8_t sequence, uint8_t *data, IPAddress remoteIP) {
+    int bufferToWrite = currentBuffer; // Use the current buffer index
     int stripIndex = (universe - startUniverse) / universes_by_out;
-    Serial.print("Mapped strip index: ");
-    Serial.println(stripIndex);
-
     if (stripIndex < 0 || stripIndex >= NUM_STRIPS) {
-        Serial.println("Error: Universe number out of expected strip range");
-        return; // Universe number out of expected range
+        return; // Universe number out of expected strip range
     }
 
-    int ledOffset = (universe % universes_by_out) * (NUM_LEDS_PER_STRIP / universes_by_out);
-    for (int i = 0; i < length / CHANNELS_PER_LED; i++) {
+    int ledOffset = (universe % universes_by_out) * (512 / CHANNELS_PER_LED);
+    for (int i = 0; i < min(length / CHANNELS_PER_LED, NUM_LEDS_PER_STRIP); i++) {
         int actualLedIndex = ledOffset + i;
         if (actualLedIndex < NUM_LEDS_PER_STRIP) {
-            ledsBuffer[stripIndex][actualLedIndex].setRGB(
+            ledsBuffer[stripIndex][bufferToWrite][actualLedIndex] = CRGB(
                 data[i * CHANNELS_PER_LED],
                 data[i * CHANNELS_PER_LED + 1],
                 data[i * CHANNELS_PER_LED + 2]
             );
         }
     }
+}
 
-    memcpy(ledsStrip[stripIndex], ledsBuffer[stripIndex], sizeof(ledsStrip[0]));
+void updateLEDs() {
+    // Switch the buffer before copying data
+    int bufferToShow = currentBuffer;
+    currentBuffer = (currentBuffer + 1) % 2; // Toggle buffer
+
+    for (int strip = 0; strip < NUM_STRIPS; strip++) {
+        memcpy(ledsStrip[strip], ledsBuffer[strip][bufferToShow], sizeof(ledsStrip[0]));
+    }
     FastLED.show();
-    Serial.println("LEDs updated.");
 }
