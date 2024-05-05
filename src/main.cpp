@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "artnet.h"
+#include <OctoWS2811.h>
 #include <FastLED.h>
 #include <QNEthernet.h>
 
@@ -22,7 +23,6 @@ extern "C" uint32_t set_arm_clock(uint32_t frequency);
 // --------------------------------------------------------------------------
 //  Configuration
 // --------------------------------------------------------------------------
-// FastLED
 #define NUM_LEDS_PER_STRIP 240
 #define NUM_STRIPS 5
 #define CHANNELS_PER_LED 3
@@ -30,21 +30,22 @@ extern "C" uint32_t set_arm_clock(uint32_t frequency);
 #define PIN_LED_DMX 34
 #define PIN_LED_POLL 33
 
-const bool DEBUG = false;
-
-const int universes_by_out = 2; // Adjust this as needed
-const int startUniverse = 0;    // Starting universe number
+const int universes_by_out = 2;
+const int startUniverse = 0;
 const int maxUniverses = NUM_STRIPS * universes_by_out;
 
-unsigned long lastUpdate = 0;            // Timestamp of the last LED update
-const unsigned long updateInterval = 30; // Update interval in milliseconds
+const unsigned long updateInterval = 10; // Update interval in milliseconds
 
-// Data arrays and buffer
-CRGB ledsStrip[NUM_STRIPS][NUM_LEDS_PER_STRIP];
-CRGB ledsBuffer[NUM_STRIPS][2][NUM_LEDS_PER_STRIP]; // Double buffering
-int currentBuffer = 0;                              // Index of the buffer that is currently being written to
+DMAMEM int displayMemory[NUM_LEDS_PER_STRIP * NUM_STRIPS * CHANNELS_PER_LED / 4];
+int drawingMemory[NUM_LEDS_PER_STRIP * NUM_STRIPS * CHANNELS_PER_LED / 4];
+// OctoWS2811 leds(NUM_LEDS_PER_STRIP, displayMemory, drawingMemory, WS2811_GRB | WS2811_800kHz, NUM_STRIPS, {23, 22, 21, 20, 19});
+byte PIN_LED_DATA[] = {23, 22, 21, 20, 19};
+// Create OctoWS2811 object with custom pin configuration
+const int config = WS2811_GRB | WS2811_800kHz;
+OctoWS2811 leds(NUM_LEDS_PER_STRIP, displayMemory, drawingMemory, config, NUM_STRIPS, PIN_LED_DATA);
+CRGB ledsBuffer[NUM_STRIPS][NUM_LEDS_PER_STRIP];
 
-const uint8_t PIN_LED_DATA[] = {23, 22, 21, 20, 19};
+unsigned long lastUpdate = 0;
 
 // ArtNet setup
 Artnet artnet;
@@ -99,12 +100,13 @@ void setup()
   pinMode(PIN_LED_DMX, OUTPUT);
   pinMode(PIN_LED_POLL, OUTPUT);
 
-  // Initialize each LED strip
-  FastLED.addLeds<WS2813, 23, GRB>(ledsStrip[0], NUM_LEDS_PER_STRIP);
-  FastLED.addLeds<WS2813, 22, GRB>(ledsStrip[1], NUM_LEDS_PER_STRIP);
-  FastLED.addLeds<WS2813, 21, GRB>(ledsStrip[2], NUM_LEDS_PER_STRIP);
-  FastLED.addLeds<WS2813, 20, GRB>(ledsStrip[3], NUM_LEDS_PER_STRIP);
-  FastLED.addLeds<WS2813, 19, GRB>(ledsStrip[4], NUM_LEDS_PER_STRIP);
+  // Initialize OctoWS2811
+  leds.begin();
+  leds.show();
+  
+  // Initialize FastLED
+  // FastLED.addLeds<WS2811_PORTD, NUM_LEDS_PER_STRIP>(ledsBuffer, NUM_STRIPS * NUM_LEDS_PER_STRIP);
+  // FastLED.addLeds<NUM_STRIPS, WS2813_800kHz, 19, GRB>(leds, NUM_LEDS_PER_STRIP);
 
   // Teensy's internal MAC retrieved
   uint8_t mac[6];
@@ -219,17 +221,17 @@ bool initEthernet()
 //  Main Program
 // --------------------------------------------------------------------------
 void loop() {
-    unsigned long currentTime = millis();
+  unsigned long currentTime = millis();
     if (currentTime - lastUpdate >= updateInterval) {
         updateLEDs();
         lastUpdate = currentTime;
     }
 
     // Handle ArtNet data
-    uint16_t r = artnet.read();
-    if (r == ART_DMX) {
+    uint16_t packetType = artnet.read();
+    if (packetType == ART_DMX) {
         digitalWrite(PIN_LED_DMX, HIGH);
-        delay(1); // Minimal delay to flash LED
+        // delay(1);
         digitalWrite(PIN_LED_DMX, LOW);
     }
 }
@@ -238,32 +240,21 @@ void loop() {
 //  Functions
 // --------------------------------------------------------------------------
 void onDmxFrame(uint16_t universe, uint16_t length, uint8_t sequence, uint8_t *data, IPAddress remoteIP) {
-    int bufferToWrite = currentBuffer; // Use the current buffer index
     int stripIndex = (universe - startUniverse) / universes_by_out;
     if (stripIndex < 0 || stripIndex >= NUM_STRIPS) {
-        return; // Universe number out of expected strip range
+        return; // Out of range
     }
 
     int ledOffset = (universe % universes_by_out) * (512 / CHANNELS_PER_LED);
     for (int i = 0; i < min(length / CHANNELS_PER_LED, NUM_LEDS_PER_STRIP); i++) {
         int actualLedIndex = ledOffset + i;
-        if (actualLedIndex < NUM_LEDS_PER_STRIP) {
-            ledsBuffer[stripIndex][bufferToWrite][actualLedIndex] = CRGB(
-                data[i * CHANNELS_PER_LED],
-                data[i * CHANNELS_PER_LED + 1],
-                data[i * CHANNELS_PER_LED + 2]
-            );
-        }
+        leds.setPixel(stripIndex * NUM_LEDS_PER_STRIP + actualLedIndex,
+                      data[i * CHANNELS_PER_LED],
+                      data[i * CHANNELS_PER_LED + 1],
+                      data[i * CHANNELS_PER_LED + 2]);
     }
 }
 
 void updateLEDs() {
-    // Switch the buffer before copying data
-    int bufferToShow = currentBuffer;
-    currentBuffer = (currentBuffer + 1) % 2; // Toggle buffer
-
-    for (int strip = 0; strip < NUM_STRIPS; strip++) {
-        memcpy(ledsStrip[strip], ledsBuffer[strip][bufferToShow], sizeof(ledsStrip[0]));
-    }
-    FastLED.show();
+    leds.show();
 }
