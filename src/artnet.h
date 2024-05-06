@@ -22,6 +22,7 @@
     #include <EthernetUdp.h>
 #endif
 
+#define NUMBER_OF_OUTPUTS 10
 // UDP specific
 #define ART_NET_PORT 6454
 // Opcodes
@@ -54,11 +55,11 @@ struct artnet_reply_s {
   uint8_t  nodereport[64];
   uint8_t  numbportsH;
   uint8_t  numbports;
-  uint8_t  porttypes[6];//max of 4 ports per node - changed to 6
-  uint8_t  goodinput[6];
-  uint8_t  goodoutput[6];
-  uint8_t  swin[6];
-  uint8_t  swout[6];
+  uint8_t  porttypes[4];//max of 4 ports per node - changed to 6
+  uint8_t  goodinput[4];
+  uint8_t  goodoutput[NUMBER_OF_OUTPUTS];
+  uint8_t  swin[NUMBER_OF_OUTPUTS];
+  uint8_t  swout[NUMBER_OF_OUTPUTS];
   uint8_t  swvideo;
   uint8_t  swmacro;
   uint8_t  swremote;

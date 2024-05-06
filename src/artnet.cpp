@@ -94,9 +94,9 @@ uint16_t Artnet::read()
         ArtPollReply.opCode = ART_POLL_REPLY;
         ArtPollReply.port =  ART_NET_PORT;
 
-        memset(ArtPollReply.goodinput,  0x08, 5);
-        memset(ArtPollReply.goodoutput,  0x80, 5);
-        memset(ArtPollReply.porttypes,  0xc0, 5);
+        memset(ArtPollReply.goodinput,  0x08, 4);
+        memset(ArtPollReply.goodoutput,  0x80, NUMBER_OF_OUTPUTS+1);
+        memset(ArtPollReply.porttypes,  0xc0, 4);
 
         uint8_t shortname [18];
         uint8_t longname [64];
@@ -121,7 +121,7 @@ uint16_t Artnet::read()
         ArtPollReply.style      = 0;
 
         ArtPollReply.numbportsH = 0;
-        ArtPollReply.numbports  = 5;
+        ArtPollReply.numbports  = NUMBER_OF_OUTPUTS+1;
         ArtPollReply.status2    = 0x08;
 
         ArtPollReply.bindip[0] = node_ip_address[0];
@@ -129,15 +129,14 @@ uint16_t Artnet::read()
         ArtPollReply.bindip[2] = node_ip_address[2];
         ArtPollReply.bindip[3] = node_ip_address[3];
 
-        uint8_t swin[6]  = {0x01,0x02,0x03,0x04,0x05};
-        uint8_t swout[6] = {0x01,0x02,0x03,0x04,0x05};
-        for(uint8_t i = 0; i < 5; i++)
+        uint8_t swin[NUMBER_OF_OUTPUTS]  = {0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0A};
+        uint8_t swout[NUMBER_OF_OUTPUTS] = {0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0A};
+        for(uint8_t i = 0; i < NUMBER_OF_OUTPUTS; i++)
         {
             ArtPollReply.swout[i] = swout[i];
             ArtPollReply.swin[i] = swin[i];
         }
-        sprintf((char *)ArtPollReply.nodereport, "%i DMX output universes active.", ArtPollReply.numbports);
-        //Udp.beginPacket(broadcast, ART_NET_PORT);//send the packet to the broadcast address
+        sprintf((char *)ArtPollReply.nodereport, "%i DMX output universes active.", NUMBER_OF_OUTPUTS);
         Udp.beginPacket(remoteIP, ART_NET_PORT);//send the packet to the specific address
         Udp.write((uint8_t *)&ArtPollReply, sizeof(ArtPollReply));
         Udp.endPacket();

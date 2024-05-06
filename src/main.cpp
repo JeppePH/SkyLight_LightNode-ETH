@@ -1,17 +1,18 @@
-// Designed by Jeppe Holm @ Desorb, (c) 2023, info@desorb.dk
+// Designed by Jeppe Holm @ Desorb, (c) 2024, info@desorb.dk
 // SPDX-FileCopyrightText: (c) 2021-2023 Shawn Silverman <shawn@pobox.com>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Inspired by Artnet library for Teensy by natcl: https://github.com/natcl/Artnet
+// Parallel output thanks to https://github.com/PaulStoffregen/OctoWS2811/blob/master/examples/Teensy4_PinList/Teensy4_PinList.ino
 
 // C++ includes
 #include <algorithm>
 #include <cstdio>
 #include <utility>
 #include <vector>
+#include <IntervalTimer.h>
 
 #include "artnet.h"
 #include <OctoWS2811.h>
-#include <FastLED.h>
 #include <QNEthernet.h>
 
 using namespace qindesign::network;
@@ -23,29 +24,29 @@ extern "C" uint32_t set_arm_clock(uint32_t frequency);
 // --------------------------------------------------------------------------
 //  Configuration
 // --------------------------------------------------------------------------
-#define NUM_LEDS_PER_STRIP 240
-#define NUM_STRIPS 5
-#define CHANNELS_PER_LED 3
-#define PIN_LED_STATUS 35
-#define PIN_LED_DMX 34
-#define PIN_LED_POLL 33
+#define NUM_STRIPS          5
+#define CHANNELS_PER_LED    3
+#define PIN_LED_STATUS      35
+#define PIN_LED_DMX         34
+#define PIN_LED_POLL        33
+#define UNIVERSES_BY_OUT    2
 
-const int universes_by_out = 2;
+const int num_leds_pr_out = 512 * UNIVERSES_BY_OUT / CHANNELS_PER_LED;
 const int startUniverse = 0;
-const int maxUniverses = NUM_STRIPS * universes_by_out;
+const int maxUniverses = NUM_STRIPS * UNIVERSES_BY_OUT;
 
-const unsigned long updateInterval = 10; // Update interval in milliseconds
+const unsigned long updateInterval = 1000/60; // Update interval in milliseconds
 
-DMAMEM int displayMemory[NUM_LEDS_PER_STRIP * NUM_STRIPS * CHANNELS_PER_LED / 4];
-int drawingMemory[NUM_LEDS_PER_STRIP * NUM_STRIPS * CHANNELS_PER_LED / 4];
-// OctoWS2811 leds(NUM_LEDS_PER_STRIP, displayMemory, drawingMemory, WS2811_GRB | WS2811_800kHz, NUM_STRIPS, {23, 22, 21, 20, 19});
+DMAMEM int displayMemory[num_leds_pr_out * NUM_STRIPS * CHANNELS_PER_LED / 4];
+int drawingMemory[num_leds_pr_out * NUM_STRIPS * CHANNELS_PER_LED / 4];
 byte PIN_LED_DATA[] = {23, 22, 21, 20, 19};
-// Create OctoWS2811 object with custom pin configuration
 const int config = WS2811_GRB | WS2811_800kHz;
-OctoWS2811 leds(NUM_LEDS_PER_STRIP, displayMemory, drawingMemory, config, NUM_STRIPS, PIN_LED_DATA);
-CRGB ledsBuffer[NUM_STRIPS][NUM_LEDS_PER_STRIP];
+OctoWS2811 leds(num_leds_pr_out, displayMemory, drawingMemory, config, NUM_STRIPS, PIN_LED_DATA);
 
 unsigned long lastUpdate = 0;
+
+IntervalTimer dmxTimer;
+IntervalTimer pollTimer;
 
 // ArtNet setup
 Artnet artnet;
@@ -83,6 +84,17 @@ void onDmxFrame(uint16_t universe, uint16_t length, uint8_t sequence, uint8_t *d
 void updateLEDs();
 
 // --------------------------------------------------------------------------
+//  Interrupts
+// --------------------------------------------------------------------------
+void turnOffLEDDmx() {
+    digitalWrite(PIN_LED_DMX, LOW);
+}
+
+void turnOffLEDPoll() {
+    digitalWrite(PIN_LED_POLL, LOW);
+}
+
+// --------------------------------------------------------------------------
 //  Main Setup
 // --------------------------------------------------------------------------
 void setup()
@@ -103,10 +115,6 @@ void setup()
   // Initialize OctoWS2811
   leds.begin();
   leds.show();
-  
-  // Initialize FastLED
-  // FastLED.addLeds<WS2811_PORTD, NUM_LEDS_PER_STRIP>(ledsBuffer, NUM_STRIPS * NUM_LEDS_PER_STRIP);
-  // FastLED.addLeds<NUM_STRIPS, WS2813_800kHz, 19, GRB>(leds, NUM_LEDS_PER_STRIP);
 
   // Teensy's internal MAC retrieved
   uint8_t mac[6];
@@ -231,24 +239,35 @@ void loop() {
     uint16_t packetType = artnet.read();
     if (packetType == ART_DMX) {
         digitalWrite(PIN_LED_DMX, HIGH);
-        // delay(1);
-        digitalWrite(PIN_LED_DMX, LOW);
+        dmxTimer.begin(turnOffLEDDmx, 5000); // 5ms
+    } else if (packetType == ART_POLL) {
+        digitalWrite(PIN_LED_POLL, HIGH);
+        pollTimer.begin(turnOffLEDPoll, 100000); // 200ms
     }
+    
 }
 
 // --------------------------------------------------------------------------
 //  Functions
 // --------------------------------------------------------------------------
 void onDmxFrame(uint16_t universe, uint16_t length, uint8_t sequence, uint8_t *data, IPAddress remoteIP) {
-    int stripIndex = (universe - startUniverse) / universes_by_out;
+    int stripIndex = (universe - startUniverse) / UNIVERSES_BY_OUT;
     if (stripIndex < 0 || stripIndex >= NUM_STRIPS) {
-        return; // Out of range
+        return;
     }
 
-    int ledOffset = (universe % universes_by_out) * (512 / CHANNELS_PER_LED);
-    for (int i = 0; i < min(length / CHANNELS_PER_LED, NUM_LEDS_PER_STRIP); i++) {
+    int ledOffset = (universe % UNIVERSES_BY_OUT) * (512 / CHANNELS_PER_LED);
+
+    Serial.print("Universe: ");
+    Serial.print(universe);
+    Serial.print(", StripIndex: ");
+    Serial.print(stripIndex);
+    Serial.print(", LedOffset: ");
+    Serial.println(ledOffset);
+
+    for (int i = 0; i < min(length / CHANNELS_PER_LED, num_leds_pr_out); i++) {
         int actualLedIndex = ledOffset + i;
-        leds.setPixel(stripIndex * NUM_LEDS_PER_STRIP + actualLedIndex,
+        leds.setPixel((stripIndex * num_leds_pr_out) + actualLedIndex,
                       data[i * CHANNELS_PER_LED],
                       data[i * CHANNELS_PER_LED + 1],
                       data[i * CHANNELS_PER_LED + 2]);
