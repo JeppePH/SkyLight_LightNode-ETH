@@ -65,10 +65,10 @@ constexpr uint16_t kServerPort = 5000;   // 53993;
 
 // Set the static IP to something other than INADDR_NONE (all zeros)
 // to not use DHCP. The values here are just examples.
-IPAddress staticIP{192, 168, 2, 117};
-IPAddress subnetMask{255, 255, 255, 0};
-IPAddress gateway{192, 168, 2, 1};
-IPAddress broadcast{192, 168, 2, 255};
+IPAddress staticIP{192, 168, 1, 117};
+IPAddress subnetMask{255, 255, 0, 0};
+IPAddress gateway{192, 168, 1, 1};
+IPAddress broadcast{192, 168, 1, 255};
 
 // --------------------------------------------------------------------------
 //  Program State
@@ -169,8 +169,17 @@ void setup()
     {
       ipBytes[i] = staticIP[i];
     }
+
+    byte snBytes[4];
+    // Copy the IP address bytes into the ipBytes array
+    for (int i = 0; i < 4; i++)
+    {
+      snBytes[i] = subnetMask[i];
+    }
+
     // start ArtNet
     artnet.begin(mac, ipBytes);
+    artnet.setBroadcastAuto(ipBytes, snBytes);
 
     // this will be called for each packet received
     artnet.setArtDmxCallback(onDmxFrame);
