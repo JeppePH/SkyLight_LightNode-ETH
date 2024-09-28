@@ -8,8 +8,6 @@ String ledType = "WS2811";
 String colorOrder = "GRB";
 uint16_t updateSpeed = 60; // Hz
 
-const int chipSelect = BUILTIN_SDCARD; // SD card chip select pin
-
 uint8_t mac[6] = { 0x04, 0xE9, 0xE5, 0x00, 0x00, 0x01 };  // Define mac here
 
 void saveSettingsToSD()

@@ -174,7 +174,7 @@ void handleFormSubmission(String request, EthernetClient &client)
     // Save settings to SD card
     saveSettingsToSD();
 
-    // Respond to the client with a page that will auto-refresh
+    // Respond to the client with a page that will redirect after a delay
     client.println("HTTP/1.1 200 OK");
     client.println("Content-Type: text/html");
     client.println("Connection: close");
@@ -183,17 +183,20 @@ void handleFormSubmission(String request, EthernetClient &client)
     client.println("<html>");
     client.println("<head>");
     client.println("<title>Settings Updated</title>");
-    client.println("<meta http-equiv=\"refresh\" content=\"10;url=http://");
+    // JavaScript to redirect after a delay
+    client.println("<script type=\"text/javascript\">");
+    client.println("setTimeout(function(){ window.location.href = 'http://");
     client.print(ipToString(staticIP));
-    client.println("/\">");
+    client.println("/'; }, 15000);"); // Redirect after 15 seconds
+    client.println("</script>");
     client.println("</head>");
     client.println("<body>");
     client.println("<h1>Settings Updated</h1>");
-    client.println("<p>The device will reboot to apply new settings.</p>");
-    client.println("<p>Please wait while the device restarts.</p>");
+    client.println("<p>The device is rebooting to apply new settings.</p>");
+    client.println("<p>You will be redirected to the configuration page shortly.</p>");
     client.println("</body>");
     client.println("</html>");
-
+    
     delay(1000); // Give the client time to receive the response
 
     // Reboot to apply new settings
