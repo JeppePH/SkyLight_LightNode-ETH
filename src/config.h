@@ -10,6 +10,7 @@
 extern IPAddress staticIP;
 extern IPAddress subnetMask;
 extern IPAddress gateway;
+extern IPAddress broadcastIP;
 extern String ledType;
 extern String colorOrder;
 extern uint16_t updateSpeed;

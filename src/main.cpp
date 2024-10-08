@@ -229,6 +229,7 @@ void initializeArtNet()
     // Start ArtNet
     artnet.begin(mac, ipBytes);
     artnet.setBroadcastAuto(ipBytes, snBytes);
+    // artnet.setBroadcast(broadcastIP);
 
     // Set the ArtDmx callback
     artnet.setArtDmxCallback(onDmxFrame);

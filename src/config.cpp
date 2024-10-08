@@ -4,11 +4,12 @@
 IPAddress staticIP(192, 168, 1, 116);
 IPAddress subnetMask(255, 255, 255, 0);
 IPAddress gateway(192, 168, 1, 1);
+IPAddress broadcastIP(192, 168, 1, 255);
 String ledType = "WS2813";
 String colorOrder = "GRB";
 uint16_t updateSpeed = 60; // Hz
 
-uint8_t mac[6] = { 0x04, 0xE9, 0xE5, 0x00, 0x00, 0x01 };  // Define mac here
+uint8_t mac[6] = { 0x04, 0xE9, 0xE5, 0x00, 0x00, 0x02 };  // Define mac here
 
 void saveSettingsToSD()
 {
