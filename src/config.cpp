@@ -1,10 +1,10 @@
 #include "config.h"
 
 // Define configuration variables
-IPAddress staticIP(192, 168, 1, 117);
+IPAddress staticIP(192, 168, 1, 116);
 IPAddress subnetMask(255, 255, 255, 0);
 IPAddress gateway(192, 168, 1, 1);
-String ledType = "WS2811";
+String ledType = "WS2813";
 String colorOrder = "GRB";
 uint16_t updateSpeed = 60; // Hz
 

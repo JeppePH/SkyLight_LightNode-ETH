@@ -116,7 +116,7 @@ void setup()
 void loop()
 {
     unsigned long currentTime = millis();
-    if (currentTime - lastUpdate >= (1000 / updateSpeed))
+    if (currentTime - lastUpdate >= (1000 / 60)); //(1000 / updateSpeed))
     {
         updateLEDs();
         lastUpdate = currentTime;
