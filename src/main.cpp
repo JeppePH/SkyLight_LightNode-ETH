@@ -1,15 +1,31 @@
-#include "hardware2.h"
+// main.cpp
+#include <Arduino.h>
+#include <SD.h>
+#include <OctoWS2811.h>
+
+#include "hardware2_3.h"
+#include "config.h"
 #include "artnet.h"
 #include "interface.h"
-#include "config.h"
-#include <OctoWS2811.h>
-#include <QNEthernet.h>
-using namespace qindesign::network;
 
+// ================== PARAMETERS / CONSTANTS ==================
+static const uint16_t kStartUniverse = 0; // set to 1 if your controller is 1-based
+#define CHANNELS_PER_UNI 510              // 170 RGB pixels
 #define CHANNELS_PER_LED 3
-#define CHANNELS_PER_UNI 510
-#define LEDS_PER_UNI (CHANNELS_PER_UNI / CHANNELS_PER_LED)
+#define LEDS_PER_UNI (CHANNELS_PER_UNI / CHANNELS_PER_LED) // 170
 
+// ================== GLOBAL STATE ==================
+Artnet artnet;
+OctoWS2811 *leds = nullptr;
+
+static uint8_t gUniversesPerOut = 1;          // DIP 7–8 (1..4)
+static uint16_t gLedsPerStrip = LEDS_PER_UNI; // = 170 * gUniversesPerOut
+
+// DMA buffers sized for worst case: 4 segments × 170 px × 8 outs × 3 bytes
+DMAMEM int displayMemory[(LEDS_PER_UNI * 4 * kNumOutputs * 3) / 4 + 32];
+int drawingMemory[(LEDS_PER_UNI * 4 * kNumOutputs * 3) / 4 + 32];
+
+// Mode & latch
 enum RunMode : uint8_t
 {
     MODE_ART_TIMED = 0,
@@ -17,283 +33,423 @@ enum RunMode : uint8_t
     MODE_TEST_WHITE = 2,
     MODE_TEST_RAINBOW = 3
 };
-
-// Return true if Ethernet link is up (works with QNEthernet)
-static bool linkIsUp()
-{
-#ifdef LinkON // present in Arduino Ethernet-style APIs
-    return (Ethernet.linkStatus() == LinkON);
-#else
-    // Fallback: treat nonzero as "up" if LinkON isn't defined
-    return Ethernet.linkStatus();
-#endif
-}
-
-// How many universes per output strip (edit if you change per-strip length)
-static uint8_t gUniversesPerOut = 2; // 2 * 170 = 340 px/strip by default
-
-// Derivatives (computed after config/DIP)
-static uint16_t gLedsPerStrip;
-
 static RunMode gMode = MODE_ART_SYNC;
+static volatile bool gGotArtSync = false;
+static volatile bool gFrameDirty = false;
+static unsigned long lastLatchMs = 0;
 
-// Allocate for worst case: up to 4 universes/strip = 680 px/strip
-constexpr int kMaxUniversesPerOut = 4;
-constexpr int kMaxLedsPerStrip = LEDS_PER_UNI * kMaxUniversesPerOut; // 170 * 4 = 680
+static bool gLinkUp = false;
+static uint32_t gLastLinkCheckMs = 0;
+static uint32_t pollLedTimer = 0;
+static const uint16_t pollLedDurationMs = 200;
 
-DMAMEM int displayMemory[kMaxLedsPerStrip * 6];
-int drawingMemory[kMaxLedsPerStrip * 6];
-
-OctoWS2811 *leds = nullptr;
-
-Artnet artnet;
-volatile bool gGotArtSync = false;
-volatile bool gFrameDirty = false;
-uint16_t gStartUniverse = 0;
-uint16_t gFpsFallback = 60;
-static uint32_t lastUpdate = 0;
-
-static void onArtSync(IPAddress) { gGotArtSync = true; }
-static void setStatus(bool on) { ledWrite(PIN_LED_STATUS, on); }
-
-// Drive status LED from real Ethernet link state (QNEthernet)
-static void setupLinkLED()
+// ================== HELPERS ==================
+static inline int octoIndex(uint8_t out, uint16_t pixelInStrip)
 {
-    // Immediate state
-    setStatus(Ethernet.linkState());
-    // Live updates on link changes
-    Ethernet.onLinkState([](bool state)
-                         {
-    setStatus(state);  // ON when link is UP
-    Serial.printf("Link %s\n", state ? "UP" : "DOWN"); });
+    // OctoWS2811 stores pixels interleaved by output
+    return pixelInStrip * kNumOutputs + out;
 }
 
-static void initLEDs()
+static int octoConfigFromColorOrder(const String &order)
 {
-    int cfg = WS2811_800kHz | (colorOrder == "RGB" ? WS2811_RGB : colorOrder == "BRG" ? WS2811_BRG
-                                                                                      : WS2811_GRB);
+    int cfg = WS2811_800kHz;
+    if (order == "RGB")
+        cfg |= WS2811_RGB;
+    else if (order == "BRG")
+        cfg |= WS2811_BRG;
+    else
+        cfg |= WS2811_GRB; // default
+    return cfg;
+}
+
+static void initOcto()
+{
+    if (leds)
+    {
+        delete leds;
+        leds = nullptr;
+    }
+    int cfg = octoConfigFromColorOrder(colorOrder);
     leds = new OctoWS2811(gLedsPerStrip, displayMemory, drawingMemory, cfg, kNumOutputs, (byte *)kDataPins);
     leds->begin();
     leds->show();
 }
 
-static void onDmxFrame(uint16_t uni, uint16_t len, uint8_t, uint8_t *data, IPAddress)
+static void initArtnet()
+{
+    artnet.begin(); // Ethernet is already up via QNEthernet
+    artnet.setBroadcastAuto(Ethernet.localIP(), Ethernet.subnetMask());
+
+    artnet.setStartUniverse(kStartUniverse); // base universe for OUT0
+    // (Optional) if you later expose UPO via UI:
+    // artnet.setUniversesPerOutput(gUniversesPerOut);
+}
+
+static void initNetwork()
+{
+    // stopWebServer();                 // implement as server.end() inside interface.cpp
+    // delay(50);
+
+    // Ethernet.end();
+
+    // Bring up Ethernet (QNEthernet supports this overload)
+    IPAddress dns(0, 0, 0, 0);
+    Ethernet.begin(mac, staticIP, dns, gateway, subnetMask);
+    // Ethernet.setHostname("SkyLED");
+
+    if (!Ethernet.waitForLocalIP(3000))
+    {
+        Serial.println("[Net] No local IP after 3s");
+    }
+}
+
+static inline void blackoutAll()
 {
     if (!leds)
         return;
-    int rel = uni; // startUniverse = 0; adjust if you add that later
-    int out = rel / gUniversesPerOut;
-    if (out < 0 || out >= kNumOutputs)
-        return;
-    int uIn = rel % gUniversesPerOut;
-    int base = out * gLedsPerStrip + uIn * 170; // 170 px / universe
-    int n = min((int)(len / 3), 170);
-    for (int i = 0; i < n; ++i)
+    for (uint16_t p = 0; p < gLedsPerStrip; ++p)
     {
-        int di = i * 3;
-        leds->setPixel(base + i, data[di], data[di + 1], data[di + 2]);
+        for (uint8_t o = 0; o < kNumOutputs; ++o)
+        {
+            leds->setPixel(octoIndex(o, p), 0, 0, 0);
+        }
     }
+    leds->show();
+    gFrameDirty = false;
+    gGotArtSync = false;
+}
+
+// ================== DIP WATCHER ==================
+struct DipWatcher
+{
+    uint8_t stable = 0, sample = 0, lastApplied = 0;
+    uint32_t sampleSince = 0, lastPoll = 0;
+    const uint16_t pollMs = 10, debounceMs = 40;
+
+    void begin()
+    {
+        dipInit();
+        sample = readDip8();
+        delay(debounceMs);
+        stable = readDip8();
+        sample = stable;
+        sampleSince = millis();
+        lastPoll = millis();
+        apply(stable, true);
+    }
+    void update()
+    {
+        uint32_t now = millis();
+        if (now - lastPoll < pollMs)
+            return;
+        lastPoll = now;
+
+        uint8_t raw = readDip8();
+        if (raw != sample)
+        {
+            sample = raw;
+            sampleSince = now;
+            return;
+        }
+        if ((now - sampleSince) >= debounceMs && sample != stable)
+        {
+            stable = sample;
+            apply(stable, false);
+        }
+    }
+    void apply(uint8_t dip, bool first)
+    {
+        // ---- Blackout immediately on any DIP change (but skip at very first boot apply if you want) ----
+        if (!first)
+            blackoutAll();
+
+        // DIP 1–4: IP last octet offset (0..15), add to config base
+        // uint8_t ipOff = dip & 0x0F;
+        staticIP = baseIP;
+        staticIP[3] += (dip & 0x0F); // offset safely
+
+        // DIP 5–6: Mode
+        gMode = static_cast<RunMode>((dip >> 4) & 0x03);
+
+        // DIP 7–8: Universes per output (1..4) -> LEDs per strip
+        uint8_t upo = 1 + ((dip >> 6) & 0x03);
+        bool lengthChanged = (upo != gUniversesPerOut);
+        gUniversesPerOut = upo;
+        gLedsPerStrip = (uint16_t)(LEDS_PER_UNI * gUniversesPerOut);
+
+        // (Re)initialize subsystems as needed
+        if (first || ((lastApplied & 0x0F) != (dip & 0x0F)))
+        {
+            // Re-apply full IP config to NIC
+            initArtnet();
+            setupWebServer(); // ensure HTTP server is listening
+        }
+        if (first || lengthChanged)
+        {
+            // ensure black before reinit (safety if first==true and you still want blackout at boot)
+            // blackoutAll(); // uncomment if you ALSO want blackout at boot-time first apply
+            initOcto();
+        }
+
+        lastApplied = dip;
+        Serial.printf("DIP %s -> 0x%02X | IP=%d.%d.%d.%d | Mode=%u | UPO=%u | LEDs/strip=%u\n",
+                      first ? "init" : "changed", dip,
+                      staticIP[0], staticIP[1], staticIP[2], staticIP[3],
+                      (unsigned)gMode, (unsigned)gUniversesPerOut, (unsigned)gLedsPerStrip);
+    }
+} gDip;
+
+// ================== ART-NET CALLBACKS ==================
+static void onArtSync(IPAddress)
+{
+    gGotArtSync = true;
+}
+
+static void onDmxFrame(uint16_t uni, uint16_t len, uint8_t /*seq*/, uint8_t *data, IPAddress)
+{
+    Serial.printf("Art-Net DMX frame: Uni=%u Len=%u\n", (unsigned)uni, (unsigned)len);
+    if (!leds) return;
+    if (uni < kStartUniverse) return;
+
+    // ----- BLOCKED mapping: UPO universes per output -----
+    uint32_t rel    = (uint32_t)uni - (uint32_t)kStartUniverse;
+    uint8_t  out    = (uint8_t)(rel / gUniversesPerOut);      // which output
+    uint16_t seg    = (uint16_t)(rel % gUniversesPerOut);     // universe# within that output
+    if (out >= kNumOutputs) return;
+
+    // Start pixel of this universe on that output
+    const uint16_t base    = (uint16_t)(seg * LEDS_PER_UNI);          // 0,170,340,...
+    uint16_t       pxInUni = (uint16_t)min((int)(len / 3), (int)LEDS_PER_UNI);
+
+    // Clip to configured strip length (safety)
+    if (base >= gLedsPerStrip) return;
+    if (base + pxInUni > gLedsPerStrip) pxInUni = gLedsPerStrip - base;
+    if (pxInUni == 0) return;
+
+    // ----- Write pixels: CONTIGUOUS block per output -----
+    const uint32_t outBase = (uint32_t)out * (uint32_t)gLedsPerStrip; // start of this output’s block
+    for (uint16_t i = 0; i < pxInUni; ++i) {
+        const int di  = i * 3;                // R,G,B
+        const int gi  = (int)(outBase + base + i);  // global linear index
+        leds->setPixel(gi, data[di + 0], data[di + 1], data[di + 2]);  // RGB; color order handled by Octo config
+    }
+
     gFrameDirty = true;
     ledWrite(PIN_LED_DMX, true);
 }
 
+
+// ================== LATCH & TEST MODES ==================
+static void latchIfDue()
+{
+    const unsigned long now = millis();
+    const unsigned long period = 1000UL / (updateSpeed ? updateSpeed : 60);
+
+    bool shouldLatch = false;
+    if (gMode == MODE_ART_SYNC)
+    {
+        shouldLatch = (gGotArtSync && gFrameDirty) || ((now - lastLatchMs) >= period && gFrameDirty);
+    }
+    else if (gMode == MODE_ART_TIMED)
+    {
+        shouldLatch = ((now - lastLatchMs) >= period);
+    }
+
+    if (shouldLatch)
+    {
+        leds->show();
+        gFrameDirty = false;
+        gGotArtSync = false;
+        lastLatchMs = now;
+        ledWrite(PIN_LED_DMX, false);
+        ledWrite(PIN_LED_POLL, false);
+    }
+}
+
+static void runTestWhite()
+{
+    static uint32_t t0 = 0;
+    if (millis() - t0 < 500)
+        return;
+    t0 = millis();
+    for (uint16_t p = 0; p < gLedsPerStrip; ++p)
+    {
+        for (uint8_t o = 0; o < kNumOutputs; ++o)
+        {
+            leds->setPixel(octoIndex(o, p), 255, 255, 255);
+        }
+    }
+    leds->show();
+}
+
+static void runTestRainbow()
+{
+    // Tune these two to taste
+    const uint16_t frameIntervalMs = 40; // time between hue steps (larger = slower)
+    const uint8_t spatialStride = 2;     // how fast color changes along each strip (1 = slower than 3)
+
+    static uint16_t h = 0;
+    static uint32_t last = 0;
+    uint32_t now = millis();
+    if (now - last < frameIntervalMs)
+        return; // throttle animation speed
+    last = now;
+
+    for (uint16_t p = 0; p < gLedsPerStrip; ++p)
+    {
+        // gentler spatial variation and slow temporal shift
+        uint8_t v = (uint8_t)((p * spatialStride + h) & 255);
+
+        // compact HSV->RGB (value=full, sat=full)
+        uint8_t region = v / 43, rem = v % 43;
+        uint8_t q = (uint8_t)((255 * (43 - rem)) / 43);
+        uint8_t t = (uint8_t)((255 * rem) / 43);
+        uint8_t r, g, b;
+        switch (region)
+        {
+        case 0:
+            r = 255;
+            g = t;
+            b = 0;
+            break;
+        case 1:
+            r = q;
+            g = 255;
+            b = 0;
+            break;
+        case 2:
+            r = 0;
+            g = 255;
+            b = t;
+            break;
+        case 3:
+            r = 0;
+            g = q;
+            b = 255;
+            break;
+        case 4:
+            r = t;
+            g = 0;
+            b = 255;
+            break;
+        default:
+            r = 255;
+            g = 0;
+            b = q;
+            break;
+        }
+
+        for (uint8_t o = 0; o < kNumOutputs; ++o)
+        {
+            leds->setPixel(octoIndex(o, p), r, g, b);
+        }
+    }
+    leds->show();
+
+    // Slow temporal advance (smaller step = slower)
+    h = (uint16_t)((h + 1) & 0xFF);
+}
+
+// ================== SETUP / LOOP ==================
 void setup()
 {
     Serial.begin(115200);
+    uint32_t t0 = millis();
+    while (!Serial && (millis() - t0) < 1500)
+    {
+    }
+
+    // Status LEDs
     ledWrite(PIN_LED_STATUS, false);
     ledWrite(PIN_LED_DMX, false);
     ledWrite(PIN_LED_POLL, false);
 
-    // if (SD.begin(BUILTIN_SDCARD)) loadSettingsFromSD();
-
-    dipInit();
-
-    auto applyDipBootConfig = []()
+    // SD config
+    if (SD.begin(BUILTIN_SDCARD))
     {
-        const uint8_t dip = readDip8(); // normalized so "ON"=1 if DIP_ACTIVE_LOW=true
-
-        // --- Decode fields ---
-        const uint8_t ipOff = (dip & 0x0F);         // DIP 1–4
-        const uint8_t modeV = ((dip >> 4) & 0x03);  // DIP 5–6
-        const uint8_t upoSel = ((dip >> 6) & 0x03); // DIP 7–8
-
-        // Apply: Mode
-        gMode = static_cast<RunMode>(modeV);
-
-        // Apply: Universes per output (1..4)
-        gUniversesPerOut = 1 + upoSel;                   // 1..4
-        gLedsPerStrip = LEDS_PER_UNI * gUniversesPerOut; // 170 px per universe
-
-        // Apply: IP last-octet offset
-        IPAddress ip = staticIP;
-        ip[3] = static_cast<uint8_t>(ip[3] + ipOff);
-        staticIP = ip;
-
-        // --- Debug printout ---
-        char bits[9];
-        for (int i = 7; i >= 0; --i)
-            bits[7 - i] = ((dip >> i) & 0x01) ? '1' : '0';
-        bits[8] = '\0';
-
-        const char *modeStr =
-            (gMode == MODE_ART_TIMED) ? "ART_TIMED" : (gMode == MODE_ART_SYNC) ? "ART_SYNC"
-                                                  : (gMode == MODE_TEST_WHITE) ? "TEST_WHITE"
-                                                                               : "TEST_RAINBOW";
-
-        Serial.printf("DIP=0x%02X (bits 8..1: %s)\r\n", dip, bits);
-        Serial.printf("  IP offset: +%u  ->  %d.%d.%d.%d\r\n",
-                      ipOff, staticIP[0], staticIP[1], staticIP[2], staticIP[3]);
-        Serial.printf("  Mode: %s (%u)\r\n", modeStr, static_cast<unsigned>(gMode));
-        Serial.printf("  Universes/Output: %u  (LEDs/strip: %u)\r\n",
-                      static_cast<unsigned>(gUniversesPerOut),
-                      static_cast<unsigned>(gLedsPerStrip));
-    };
-    applyDipBootConfig();
-
-    // NO: gLedsPerStrip = LEDS_PER_UNI * gUniversesPerOut;  // already done above
-
-    initLEDs();
-
-    byte ipBytes[4], snBytes[4];
-    for (int i = 0; i < 4; i++)
-    {
-        ipBytes[i] = staticIP[i];
-        snBytes[i] = subnetMask[i];
+        loadSettingsFromSD(); // loads staticIP, subnetMask, gateway, colorOrder, updateSpeed
     }
-    artnet.begin(mac, ipBytes);
-    artnet.setBroadcastAuto(staticIP, subnetMask);
+    else
+    {
+        Serial.println("SD init failed; using compiled defaults.");
+    }
+
+    // Initialize subsystems using current config; DIP will immediately re-apply/override
+    initNetwork();
+    initOcto();
+    initArtnet();
+    setupWebServer();
+
+    // DIP live watcher (applies IP/mode/UPO and re-inits as needed)
+    gDip.begin();
+
+    // Bind callbacks after DIP may have re-initialized Art-Net
     artnet.setArtDmxCallback(onDmxFrame);
     artnet.setArtSyncCallback(onArtSync);
 
-    setupLinkLED(); // reflect real cable link on the status LED
+    ledWrite(PIN_LED_STATUS, true);
+    Serial.println("Art-Net LED node booted.");
 
-    // Do NOT force status LED on here; it's handled by link state now.
+    Serial.printf("StartUni=%u, UPO=%u, Outputs=%u, LEDs/uni=%u, LEDs/out=%u\n",
+              (unsigned)kStartUniverse, (unsigned)gUniversesPerOut,
+              (unsigned)kNumOutputs, (unsigned)LEDS_PER_UNI, (unsigned)gLedsPerStrip);
 }
 
 void loop()
 {
-    // Drain all pending Art-Net packets this iteration
-    for (;;)
+    Ethernet.loop();   // <-- IMPORTANT: services the TCP/IP timers and RX
+    gDip.update();     // DIP live update
+    handleWebServer(); // <-- poll the web server every frame
+
+    // Quick link check every ~1s
+    if (millis() - gLastLinkCheckMs >= 1000)
     {
-        uint16_t pktType = artnet.read();
-        if (pktType == 0)
-            break; // no more packets
-
-        if (pktType == ART_POLL)
+        gLastLinkCheckMs = millis();
+        bool up = (Ethernet.linkStatus() == 1);
+        if (up != gLinkUp)
         {
-            ledWrite(PIN_LED_POLL, true);
-        }
-        // ART_DMX and ART_SYNC are handled via callbacks:
-        //   onDmxFrame() sets gFrameDirty + pulses DMX LED
-        //   onArtSync()  sets gGotArtSync
-    }
-
-    const uint32_t now = millis();
-    const uint32_t fps = (updateSpeed > 0 ? updateSpeed : 60);
-    const uint32_t period = 1000UL / fps;
-
-    switch (gMode)
-    {
-    case MODE_ART_SYNC:
-        // Latch on ArtSync (preferred) or timed fallback if no sync arrives
-        if ((gGotArtSync && gFrameDirty) || ((now - lastUpdate) >= period && gFrameDirty))
-        {
-            if (leds)
-                leds->show();
-            gGotArtSync = false;
-            gFrameDirty = false;
-            lastUpdate = now;
-            ledWrite(PIN_LED_DMX, false);
-            ledWrite(PIN_LED_POLL, false);
-        }
-        break;
-
-    case MODE_ART_TIMED:
-        // Fixed-rate latching regardless of ArtSync
-        if (now - lastUpdate >= period)
-        {
-            if (leds)
-                leds->show();
-            lastUpdate = now;
-            ledWrite(PIN_LED_DMX, false);
-            ledWrite(PIN_LED_POLL, false);
-        }
-        break;
-
-    case MODE_TEST_WHITE:
-    {
-        static bool initialized = false;
-        if (!initialized && leds)
-        {
-            const int total = gLedsPerStrip * kNumOutputs;
-            for (int i = 0; i < total; ++i)
-                leds->setPixel(i, 255, 255, 255);
-            leds->show();
-            initialized = true;
-        }
-        break;
-    }
-
-    case MODE_TEST_RAINBOW:
-    {
-        static uint16_t hue = 0;
-        static uint32_t lastAnim = 0;
-        if (now - lastAnim >= 16)
-        { // ~60 Hz
-            lastAnim = now;
-            if (leds)
+            gLinkUp = up;
+            if (gLinkUp)
             {
-                const int total = gLedsPerStrip * kNumOutputs;
-                for (int i = 0; i < total; ++i)
-                {
-                    uint8_t v = (uint8_t)((i * 3 + hue) & 0xFF);
-                    uint8_t region = v / 43, rem = v % 43;
-                    uint8_t q = (uint8_t)((255 * (43 - rem)) / 43);
-                    uint8_t t = (uint8_t)((255 * rem) / 43);
-                    uint8_t r, g, b;
-                    switch (region)
-                    {
-                    case 0:
-                        r = 255;
-                        g = t;
-                        b = 0;
-                        break;
-                    case 1:
-                        r = q;
-                        g = 255;
-                        b = 0;
-                        break;
-                    case 2:
-                        r = 0;
-                        g = 255;
-                        b = t;
-                        break;
-                    case 3:
-                        r = 0;
-                        g = q;
-                        b = 255;
-                        break;
-                    case 4:
-                        r = t;
-                        g = 0;
-                        b = 255;
-                        break;
-                    default:
-                        r = 255;
-                        g = 0;
-                        b = q;
-                        break;
-                    }
-                    leds->setPixel(i, r, g, b);
-                }
-                leds->show();
-                hue += 2;
+                ledWrite(PIN_LED_STATUS, true);
+                Serial.println("Link came UP. Re-init artnet + server.");
+                initArtnet();     // re-apply static IP/broadcast
+                setupWebServer(); // ensure HTTP server is listening
+            }
+            else
+            {
+                ledWrite(PIN_LED_STATUS, false);
+                Serial.println("Link went DOWN (cable unplugged?).");
             }
         }
-        break;
-    }
     }
 
-    // If you use a web UI, call it here:
-    // handleWebServer();
+    // Network / Art-Net
+    uint16_t pkt = artnet.read();
+    if (pkt == ART_POLL)
+    {
+        Serial.println("Art-Net Poll received.");
+        ledWrite(PIN_LED_POLL, true);
+        pollLedTimer = millis(); // start short blink timer
+    }
+    // --- Auto-off for Poll LED ---
+    if (pollLedTimer && (millis() - pollLedTimer >= pollLedDurationMs))
+    {
+        ledWrite(PIN_LED_POLL, false);
+        pollLedTimer = 0;
+    }
+
+    // Run mode
+    switch (gMode)
+    {
+    case MODE_TEST_WHITE:
+        runTestWhite();
+        break;
+    case MODE_TEST_RAINBOW:
+        runTestRainbow();
+        break;
+    default:
+        latchIfDue();
+        break; // ART_TIMED / ART_SYNC
+    }
 }

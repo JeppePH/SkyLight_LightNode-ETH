@@ -2,15 +2,16 @@
 #define CONFIG_H
 
 #include <Arduino.h>
+#include <SD.h> 
 #include <QNEthernet.h>
-#include <SD.h> // Add this line
-
+using namespace qindesign::network;
 
 // Configuration variables
-extern IPAddress staticIP;
+extern IPAddress baseIP;
 extern IPAddress subnetMask;
 extern IPAddress gateway;
 extern IPAddress broadcastIP;
+extern IPAddress staticIP;
 extern String ledType;
 extern String colorOrder;
 extern uint16_t updateSpeed;

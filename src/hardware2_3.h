@@ -3,7 +3,7 @@
 
 // ===== LED outputs (EDIT to match your PCB) =====
 constexpr uint8_t kNumOutputs = 8;
-constexpr uint8_t kDataPins[kNumOutputs] = {22, 21, 20, 19, 18, 17, 16, 15}; 
+constexpr uint8_t kDataPins[kNumOutputs] = {36, 37, 38, 39, 40, 41, 14, 15}; 
 
 // ===== Status LEDs (flip if inverted by transistor) =====
 constexpr bool LED_ACTIVE_LOW = false;

@@ -1,15 +1,17 @@
 #include "config.h"
 
 // Define configuration variables
-IPAddress staticIP(192, 168, 1, 000);
-IPAddress subnetMask(255, 255, 255, 0);
-IPAddress gateway(192, 168, 1, 1);
-IPAddress broadcastIP(192, 168, 1, 255);
+IPAddress baseIP(2, 0, 0, 80);
+IPAddress subnetMask(255, 0, 0, 0);
+IPAddress gateway(2, 0, 0, 1);
+IPAddress broadcastIP(2, 255, 255, 255);
+IPAddress staticIP = baseIP; // Default to baseIP
 String ledType = "WS2813";
 String colorOrder = "GRB";
 uint16_t updateSpeed = 60; // Hz
 
-uint8_t mac[6] = { 0x04, 0xE9, 0xE5, 0x00, 0x00, 0x02 };  // Define mac here
+uint8_t mac[6] = { 0x04, 0xE9, 0xE5, 0x00, 0x00, 0x01 };  // Define mac here
+
 
 void saveSettingsToSD()
 {

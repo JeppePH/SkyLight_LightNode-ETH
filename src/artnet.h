@@ -2,154 +2,100 @@
 #define ARTNET_H
 
 #include <Arduino.h>
+#include <QNEthernet.h>
+using namespace qindesign::network;
 
-#if defined(ARDUINO_SAMD_ZERO)
-    #include <WiFi101.h>
-    #include <WiFiUdp.h>
-#elif defined(ESP8266)
-    #include <ESP8266WiFi.h>
-    #include <WiFiUdp.h>
-#elif defined(ESP32)
-    #include <WiFi.h>
-    #include <WiFiUdp.h>
-#elif defined(ARDUINO_TEENSY41)
-    // #include <NativeEthernet.h>
-    // #include <NativeEthernetUdp.h>
-    #include <QNEthernet.h>
-    using namespace qindesign::network;
-#else
-    #include <Ethernet.h>
-    #include <EthernetUdp.h>
-#endif
+// ---------- Art-Net constants ----------
+#define ARTNET_PORT        6454
+#define ART_POLL           0x2000  // LE
+#define ART_POLL_REPLY     0x2100  // LE
+#define ART_DMX            0x5000  // LE
+#define ART_SYNC           0x5200  // LE
 
-#define NUMBER_OF_OUTPUTS 10
-// UDP specific
-#define ART_NET_PORT 6454
-// Opcodes
-#define ART_POLL 0x2000
-#define ART_POLL_REPLY 0x2100
-#define ART_DMX 0x5000
-#define ART_SYNC 0x5200
-// Buffers
-#define MAX_BUFFER_ARTNET 1060 //530
-// Packet
-#define ART_NET_ID "Art-Net\0"
-#define ART_DMX_START 18
+// Max packet size we accept (DMX=512 + header headroom)
+#define ARTNET_MAX_BUFFER  530
 
-struct artnet_reply_s {
-  uint8_t  id[8];
-  uint16_t opCode;
-  uint8_t  ip[4];
-  uint16_t port;
-  uint8_t  verH;
-  uint8_t  ver;
-  uint8_t  subH;
-  uint8_t  sub;
-  uint8_t  oemH;
-  uint8_t  oem;
-  uint8_t  ubea;
-  uint8_t  status;
-  uint8_t  etsaman[2];
-  uint8_t  shortname[18];
-  uint8_t  longname[64];
-  uint8_t  nodereport[64];
-  uint8_t  numbportsH;
-  uint8_t  numbports;
-  uint8_t  porttypes[4];//max of 4 ports per node - changed to 6
-  uint8_t  goodinput[4];
-  uint8_t  goodoutput[NUMBER_OF_OUTPUTS];
-  uint8_t  swin[NUMBER_OF_OUTPUTS];
-  uint8_t  swout[NUMBER_OF_OUTPUTS];
-  uint8_t  swvideo;
-  uint8_t  swmacro;
-  uint8_t  swremote;
-  uint8_t  sp1;
-  uint8_t  sp2;
-  uint8_t  sp3;
-  uint8_t  style;
-  uint8_t  mac[6];
-  uint8_t  bindip[4];
-  uint8_t  bindindex;
-  uint8_t  status2;
-  uint8_t  filler[26];
-} __attribute__((packed));
+// "Art-Net\0" (8 bytes)
+static const char ART_NET_ID[8] = "Art-Net";
 
-class Artnet
-{
+// ---------- Callbacks ----------
+typedef void (*ArtDmxCallback)(uint16_t universe, uint16_t length, uint8_t sequence,
+                               uint8_t *data, IPAddress remoteIP);
+typedef void (*ArtSyncCallback)(IPAddress remoteIP);
+
+// ---------- Class ----------
+class Artnet {
 public:
   Artnet();
 
-  void begin(byte mac[], byte ip[]);
+  // Begin listening (Ethernet must already be up via QNEthernet)
   void begin();
-  void setBroadcastAuto(IPAddress ip, IPAddress sn);
-  void setBroadcast(byte bc[]);
+
+  // Optional legacy helper: also configure a static IP (not recommended)
+  void begin(uint8_t mac[], uint8_t ip[]);
+
+  // Network helpers
+  void setBroadcastAuto(IPAddress ip, IPAddress subnet);
   void setBroadcast(IPAddress bc);
+  void setBroadcast(uint8_t bc[4]);
+
+  // Identity / discovery (names shown in controllers)
+  void setShortName(const char *s);  // up to 17 chars
+  void setLongName (const char *s);  // up to 63 chars
+
+  // Universe mapping for advertised ports
+  // - startUniverse: base universe for OUT0 (0-based typical)
+  // - universesPerOutput: UPO >=1 (default 1). OUTi handles [base + i*UPO .. base + i*UPO + UPO-1]
+  void setStartUniverse(uint16_t u);
+  void setUniversesPerOutput(uint8_t n);
+
+  // Process incoming Art-Net packet. Returns opcode or 0 if none.
   uint16_t read();
+
+  // Debug helpers
   void printPacketHeader();
   void printPacketContent();
 
-  // Return a pointer to the start of the DMX data
-  inline uint8_t* getDmxFrame(void)
-  {
-    return artnetPacket + ART_DMX_START;
-  }
-
-  inline uint16_t getOpcode(void)
-  {
-    return opcode;
-  }
-
-  inline uint8_t getSequence(void)
-  {
-    return sequence;
-  }
-
-  inline uint16_t getUniverse(void)
-  {
-    return incomingUniverse;
-  }
-
-  inline uint16_t getLength(void)
-  {
-    return dmxDataLength;
-  }
-
-  inline IPAddress getRemoteIP(void)
-  {
-    return remoteIP;
-  }
-
-  inline void setArtDmxCallback(void (*fptr)(uint16_t universe, uint16_t length, uint8_t sequence, uint8_t* data, IPAddress remoteIP))
-  {
-    artDmxCallback = fptr;
-  }
-
-  inline void setArtSyncCallback(void (*fptr)(IPAddress remoteIP))
-  {
-    artSyncCallback = fptr;
-  }
+  // Callbacks
+  inline void setArtDmxCallback(ArtDmxCallback cb) { artDmxCallback = cb; }
+  inline void setArtSyncCallback(ArtSyncCallback cb) { artSyncCallback = cb; }
 
 private:
-  uint8_t  node_ip_address[4];
-  uint8_t  id[8];
-  #if defined(ARDUINO_SAMD_ZERO) || defined(ESP8266) || defined(ESP32)
-    WiFiUDP Udp;
-  #else
-    EthernetUDP Udp;
-  #endif
-  struct artnet_reply_s ArtPollReply;
+  // UDP socket
+  EthernetUDP Udp;
 
+  // Network
+  IPAddress broadcastIP;
 
-  uint8_t artnetPacket[MAX_BUFFER_ARTNET];
-  uint16_t packetSize;
-  IPAddress broadcast;
-  uint16_t opcode;
-  uint8_t sequence;
-  uint16_t incomingUniverse;
-  uint16_t dmxDataLength;
+  // RX state
+  uint8_t   packetBuffer[ARTNET_MAX_BUFFER];
+  uint16_t  packetSize;
   IPAddress remoteIP;
-  void (*artDmxCallback)(uint16_t universe, uint16_t length, uint8_t sequence, uint8_t* data, IPAddress remoteIP);
-  void (*artSyncCallback)(IPAddress remoteIP);
+  uint16_t  remotePort = 0;
+
+  // Last packet (debug)
+  uint16_t lastOpcode;
+  uint8_t  lastSequence;
+  uint16_t lastUniverse;
+  uint16_t lastLength;
+
+  // Config / identity
+  static constexpr uint8_t kNumPhysicalOutputs = 8; // always advertise 8 ports
+  uint16_t startUniverse = 0; // base universe for OUT0
+  uint8_t  upo = 1; // universes-per-output (>=1)
+  char     shortName[18] = "SkyLED Node";
+  char     longName[64]  = "SkyLED Node 8 x Art-Net Outputs by DESORB";
+
+  // Tracking: has each physical output seen data since boot?
+  bool portHadData[kNumPhysicalOutputs] = {false,false,false,false,false,false,false,false};
+
+  // Callbacks
+  ArtDmxCallback  artDmxCallback  = nullptr;
+  ArtSyncCallback artSyncCallback = nullptr;
+
+  // Helpers
+  void  sendPollReply(IPAddress toIp);
+  int8_t universeToPortIndex(uint16_t universe) const; // -1 if outside any port range
 };
 
-#endif
+#endif // ARTNET_H
