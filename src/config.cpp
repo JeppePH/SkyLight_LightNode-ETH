@@ -136,3 +136,140 @@ bool stringToIP(String str, IPAddress &ip)
     ip = IPAddress(parts[0], parts[1], parts[2], parts[3]);
     return true;
 }
+
+// =======================================================
+//  Unique MAC address management
+// =======================================================
+
+// --- Helper functions ---
+static bool isAll(const uint8_t *p, uint8_t v, size_t n) {
+    for (size_t i = 0; i < n; ++i)
+        if (p[i] != v) return false;
+    return true;
+}
+
+String macToString(const uint8_t m[6]) {
+    char buf[18];
+    snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X",
+             m[0], m[1], m[2], m[3], m[4], m[5]);
+    return String(buf);
+}
+
+bool parseMAC(const String &s, uint8_t out[6]) {
+    unsigned int b[6];
+    if (sscanf(s.c_str(), "%2x:%2x:%2x:%2x:%2x:%2x",
+               &b[0], &b[1], &b[2], &b[3], &b[4], &b[5]) == 6) {
+        for (int i = 0; i < 6; ++i) out[i] = (uint8_t)b[i];
+        return true;
+    }
+    return false;
+}
+
+// --- Read Teensy 4.x fuse MAC (IMXRT OCOTP) ---
+static bool readFuseMAC(uint8_t out[6]) {
+    const uint32_t mac1 = *(volatile const uint32_t*)0x401F4410; // high 16 bits + OUI
+    const uint32_t mac0 = *(volatile const uint32_t*)0x401F4414; // low 32 bits
+
+    out[0] = (mac1 >> 8) & 0xFF;
+    out[1] = mac1 & 0xFF;
+    out[2] = (mac0 >> 24) & 0xFF;
+    out[3] = (mac0 >> 16) & 0xFF;
+    out[4] = (mac0 >> 8) & 0xFF;
+    out[5] = mac0 & 0xFF;
+
+    if (isAll(out, 0x00, 6) || isAll(out, 0xFF, 6))
+        return false;  // unprogrammed
+
+    out[0] &= 0xFE;    // ensure unicast
+    return true;
+}
+
+// --- Read "MAC=" line from config.txt ---
+static bool loadPersistedMAC(uint8_t out[6]) {
+    File f = SD.open("config.txt");
+    if (!f) return false;
+    bool ok = false;
+    while (f.available()) {
+        String line = f.readStringUntil('\n'); line.trim();
+        if (line.startsWith("MAC=")) {
+            String val = line.substring(4);
+            ok = parseMAC(val, out);
+            break;
+        }
+    }
+    f.close();
+    return ok;
+}
+
+// --- Write or replace MAC= line in config.txt ---
+static void persistMAC(const uint8_t m[6]) {
+    String lines;
+    if (SD.exists("config.txt")) {
+        File r = SD.open("config.txt");
+        while (r && r.available()) lines += r.readStringUntil('\n');
+        if (r) r.close();
+    }
+
+    // Remove existing MAC= lines
+    String outText;
+    int start = 0;
+    while (start < lines.length()) {
+        int nl = lines.indexOf('\n', start);
+        if (nl < 0) nl = lines.length();
+        String L = lines.substring(start, nl); L.trim();
+        if (!L.startsWith("MAC=")) {
+            outText += L; outText += "\n";
+        }
+        start = nl + 1;
+    }
+    outText += "MAC=" + macToString(m) + "\n";
+
+    File t = SD.open("config.tmp", FILE_WRITE);
+    if (t) {
+        t.print(outText);
+        t.flush();
+        t.close();
+        SD.remove("config.txt");
+        SD.rename("config.tmp", "config.txt");
+    }
+}
+
+// --- Generate a new locally-administered address ---
+static void generateLocalMAC(uint8_t out[6]) {
+    // 0x02 → Locally-administered, unicast
+    out[0] = 0x02;
+    out[1] = 0xDE;
+    out[2] = 0x5B;
+    uint32_t salt = millis() ^ ((uint32_t)baseIP[3] << 8);
+    out[3] = (salt >> 16) & 0xFF;
+    out[4] = (salt >> 8) & 0xFF;
+    out[5] = salt & 0xFF;
+}
+
+// --- Main initializer ---
+void initDeviceMAC() {
+    uint8_t temp[6];
+
+    // 1) Try fuse MAC
+    if (readFuseMAC(temp)) {
+        memcpy(mac, temp, 6);
+        Serial.print("Using fuse MAC: ");
+        Serial.println(macToString(mac));
+        return;
+    }
+
+    // 2) Try persisted MAC
+    if (loadPersistedMAC(temp)) {
+        memcpy(mac, temp, 6);
+        Serial.print("Using persisted MAC: ");
+        Serial.println(macToString(mac));
+        return;
+    }
+
+    // 3) Generate new one and persist
+    generateLocalMAC(temp);
+    memcpy(mac, temp, 6);
+    persistMAC(mac);
+    Serial.print("Generated & persisted new MAC: ");
+    Serial.println(macToString(mac));
+}

@@ -180,6 +180,7 @@ struct DipWatcher
         if (first || ((lastApplied & 0x0F) != (dip & 0x0F)))
         {
             // Re-apply full IP config to NIC
+            
             initNetwork();
             initArtnet();
             setupWebServer(); // ensure HTTP server is listening
@@ -381,6 +382,7 @@ void setup()
     }
 
     // Initialize subsystems using current config; DIP will immediately re-apply/override
+    initDeviceMAC();
     initNetwork();
     initOcto();
     initArtnet();
