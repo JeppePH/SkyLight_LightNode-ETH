@@ -87,10 +87,9 @@ static void initArtnet()
 
 static void initNetwork()
 {
-    // stopWebServer();                 // implement as server.end() inside interface.cpp
-    // delay(50);
-
+    // stopWebServer();
     // Ethernet.end();
+    // delay(1000);
 
     // Bring up Ethernet (QNEthernet supports this overload)
     IPAddress dns(0, 0, 0, 0);
@@ -181,6 +180,7 @@ struct DipWatcher
         if (first || ((lastApplied & 0x0F) != (dip & 0x0F)))
         {
             // Re-apply full IP config to NIC
+            initNetwork();
             initArtnet();
             setupWebServer(); // ensure HTTP server is listening
         }
@@ -208,36 +208,42 @@ static void onArtSync(IPAddress)
 static void onDmxFrame(uint16_t uni, uint16_t len, uint8_t /*seq*/, uint8_t *data, IPAddress)
 {
     Serial.printf("Art-Net DMX frame: Uni=%u Len=%u\n", (unsigned)uni, (unsigned)len);
-    if (!leds) return;
-    if (uni < kStartUniverse) return;
+    if (!leds)
+        return;
+    if (uni < kStartUniverse)
+        return;
 
     // ----- BLOCKED mapping: UPO universes per output -----
-    uint32_t rel    = (uint32_t)uni - (uint32_t)kStartUniverse;
-    uint8_t  out    = (uint8_t)(rel / gUniversesPerOut);      // which output
-    uint16_t seg    = (uint16_t)(rel % gUniversesPerOut);     // universe# within that output
-    if (out >= kNumOutputs) return;
+    uint32_t rel = (uint32_t)uni - (uint32_t)kStartUniverse;
+    uint8_t out = (uint8_t)(rel / gUniversesPerOut);   // which output
+    uint16_t seg = (uint16_t)(rel % gUniversesPerOut); // universe# within that output
+    if (out >= kNumOutputs)
+        return;
 
     // Start pixel of this universe on that output
-    const uint16_t base    = (uint16_t)(seg * LEDS_PER_UNI);          // 0,170,340,...
-    uint16_t       pxInUni = (uint16_t)min((int)(len / 3), (int)LEDS_PER_UNI);
+    const uint16_t base = (uint16_t)(seg * LEDS_PER_UNI); // 0,170,340,...
+    uint16_t pxInUni = (uint16_t)min((int)(len / 3), (int)LEDS_PER_UNI);
 
     // Clip to configured strip length (safety)
-    if (base >= gLedsPerStrip) return;
-    if (base + pxInUni > gLedsPerStrip) pxInUni = gLedsPerStrip - base;
-    if (pxInUni == 0) return;
+    if (base >= gLedsPerStrip)
+        return;
+    if (base + pxInUni > gLedsPerStrip)
+        pxInUni = gLedsPerStrip - base;
+    if (pxInUni == 0)
+        return;
 
     // ----- Write pixels: CONTIGUOUS block per output -----
     const uint32_t outBase = (uint32_t)out * (uint32_t)gLedsPerStrip; // start of this output’s block
-    for (uint16_t i = 0; i < pxInUni; ++i) {
-        const int di  = i * 3;                // R,G,B
-        const int gi  = (int)(outBase + base + i);  // global linear index
-        leds->setPixel(gi, data[di + 0], data[di + 1], data[di + 2]);  // RGB; color order handled by Octo config
+    for (uint16_t i = 0; i < pxInUni; ++i)
+    {
+        const int di = i * 3;                                         // R,G,B
+        const int gi = (int)(outBase + base + i);                     // global linear index
+        leds->setPixel(gi, data[di + 0], data[di + 1], data[di + 2]); // RGB; color order handled by Octo config
     }
 
     gFrameDirty = true;
     ledWrite(PIN_LED_DMX, true);
 }
-
 
 // ================== LATCH & TEST MODES ==================
 static void latchIfDue()
@@ -391,8 +397,8 @@ void setup()
     Serial.println("Art-Net LED node booted.");
 
     Serial.printf("StartUni=%u, UPO=%u, Outputs=%u, LEDs/uni=%u, LEDs/out=%u\n",
-              (unsigned)kStartUniverse, (unsigned)gUniversesPerOut,
-              (unsigned)kNumOutputs, (unsigned)LEDS_PER_UNI, (unsigned)gLedsPerStrip);
+                  (unsigned)kStartUniverse, (unsigned)gUniversesPerOut,
+                  (unsigned)kNumOutputs, (unsigned)LEDS_PER_UNI, (unsigned)gLedsPerStrip);
 }
 
 void loop()
