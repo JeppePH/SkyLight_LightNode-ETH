@@ -25,6 +25,12 @@ static uint16_t gLedsPerStrip = LEDS_PER_UNI; // = 170 * gUniversesPerOut
 DMAMEM int displayMemory[(LEDS_PER_UNI * 4 * kNumOutputs * 3) / 4 + 32];
 int drawingMemory[(LEDS_PER_UNI * 4 * kNumOutputs * 3) / 4 + 32];
 
+int test_brightness = 50; // for test patterns
+
+static inline uint8_t scaleTest(uint8_t v) {
+    return (uint16_t(v) * test_brightness) / 255;
+}
+
 // Mode & latch
 enum RunMode : uint8_t
 {
@@ -276,14 +282,18 @@ static void latchIfDue()
 static void runTestWhite()
 {
     static uint32_t t0 = 0;
+
+    uint8_t v = scaleTest(255);
+
     if (millis() - t0 < 500)
         return;
     t0 = millis();
     for (uint16_t p = 0; p < gLedsPerStrip; ++p)
     {
         for (uint8_t o = 0; o < kNumOutputs; ++o)
-        {
-            leds->setPixel(octoIndex(o, p), 255, 255, 255);
+        {   
+            
+            leds->setPixel(octoIndex(o, p), v, v, v);
         }
     }
     leds->show();
@@ -315,32 +325,32 @@ static void runTestRainbow()
         switch (region)
         {
         case 0:
-            r = 255;
+            r = scaleTest(r);
             g = t;
             b = 0;
             break;
         case 1:
             r = q;
-            g = 255;
+            g = scaleTest(g);
             b = 0;
             break;
         case 2:
             r = 0;
-            g = 255;
+            r = scaleTest(g);
             b = t;
             break;
         case 3:
             r = 0;
             g = q;
-            b = 255;
+            r = scaleTest(b);
             break;
         case 4:
             r = t;
             g = 0;
-            b = 255;
+            r = scaleTest(b);
             break;
         default:
-            r = 255;
+            r = scaleTest(r);
             g = 0;
             b = q;
             break;
@@ -383,10 +393,10 @@ void setup()
 
     // Initialize subsystems using current config; DIP will immediately re-apply/override
     initDeviceMAC();
-    initNetwork();
+    // initNetwork();
     initOcto();
-    initArtnet();
-    setupWebServer();
+    // initArtnet();
+    // setupWebServer();
 
     // DIP live watcher (applies IP/mode/UPO and re-inits as needed)
     gDip.begin();

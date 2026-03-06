@@ -1,7 +1,7 @@
 #include "config.h"
 
 // Define configuration variables
-IPAddress baseIP(2, 0, 0, 80);
+IPAddress baseIP(2, 200, 0, 100);
 IPAddress subnetMask(255, 0, 0, 0);
 IPAddress gateway(2, 0, 0, 1);
 IPAddress broadcastIP(2, 255, 255, 255);
