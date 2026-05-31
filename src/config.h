@@ -15,7 +15,6 @@ extern IPAddress staticIP;
 extern String ledType;
 extern String colorOrder;
 extern uint16_t updateSpeed;
-extern const int chipSelect;  // Add this line
 extern uint8_t mac[6];
 
 

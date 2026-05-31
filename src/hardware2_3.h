@@ -11,8 +11,13 @@ constexpr uint8_t PIN_LED_STATUS = 33;
 constexpr uint8_t PIN_LED_DMX    = 34;
 constexpr uint8_t PIN_LED_POLL   = 35;
 
+inline void ledInit() {
+  pinMode(PIN_LED_STATUS, OUTPUT);
+  pinMode(PIN_LED_DMX,    OUTPUT);
+  pinMode(PIN_LED_POLL,   OUTPUT);
+}
+
 inline void ledWrite(uint8_t pin, bool on) {
-  pinMode(pin, OUTPUT);
   digitalWrite(pin, LED_ACTIVE_LOW ? !on : on);
 }
 

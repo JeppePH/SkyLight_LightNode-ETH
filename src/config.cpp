@@ -26,7 +26,7 @@ void saveSettingsToSD()
         file.print("LEDTYPE="); file.println(ledType);
         file.print("ORDER=");   file.println(colorOrder);
         file.print("HZ=");      file.println(updateSpeed);
-        // optional: MAC, BROADCAST if you want to persist them later
+        file.print("MAC=");     file.println(macToString(mac));
 
         file.close();
         Serial.println("Settings saved to SD card.");
@@ -60,6 +60,7 @@ void loadSettingsFromSD()
     uint16_t  newHz   = updateSpeed;
 
     bool sawKV = false;
+    int legacyIdx = 0;
     while (file.available()) {
         String line = file.readStringUntil('\n');
         line.trim();
@@ -74,13 +75,13 @@ void loadSettingsFromSD()
             else if (k == "LEDTYPE") { newType = v; }
             else if (k == "ORDER")   { newOrd  = v; }
             else if (k == "HZ")      { newHz   = (uint16_t)v.toInt(); }
+            else if (k == "MAC")     { parseMAC(v, mac); }
             // ignore unknown keys
         } else {
             // ---- Backward compat (old format: first 6 lines) ----
             // 1: staticIP (we used to store this; treat it as BASE going forward)
             // 2: subnet, 3: gateway, 4: ledType, 5: colorOrder, 6: updateSpeed
             // We’ll read them once in order if present.
-            static int legacyIdx = 0;
             switch (legacyIdx) {
                 case 0: stringToIP(line, newBase); break;
                 case 1: stringToIP(line, newSub);  break;

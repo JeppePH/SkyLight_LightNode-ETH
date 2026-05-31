@@ -9,6 +9,12 @@ Artnet::Artnet()
       lastUniverse(0),
       lastLength(0) {}
 
+// ---------- Public: stop ----------
+void Artnet::stop()
+{
+    Udp.stop();
+}
+
 // ---------- Public: begin ----------
 void Artnet::begin()
 {
@@ -385,12 +391,3 @@ void Artnet::printPacketContent()
     Serial.println();
 }
 
-static void dumpHex(const uint8_t *buf, size_t len) {
-  Serial.printf("[ArtNet] TX %u bytes:\n", (unsigned)len);
-  for (size_t i = 0; i < len; ++i) {
-    if ((i % 16) == 0) Serial.printf("%04u: ", (unsigned)i);
-    Serial.printf("%02X ", buf[i]);
-    if ((i % 16) == 15) Serial.println();
-  }
-  if ((len % 16) != 0) Serial.println();
-}

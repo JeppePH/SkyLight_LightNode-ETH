@@ -31,6 +31,9 @@ public:
   // Begin listening (Ethernet must already be up via QNEthernet)
   void begin();
 
+  // Stop listening (call before re-initializing to avoid socket leak)
+  void stop();
+
   // Optional legacy helper: also configure a static IP (not recommended)
   void begin(uint8_t mac[], uint8_t ip[]);
 

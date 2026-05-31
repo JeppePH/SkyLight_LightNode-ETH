@@ -25,7 +25,7 @@ static uint16_t gLedsPerStrip = LEDS_PER_UNI; // = 170 * gUniversesPerOut
 DMAMEM int displayMemory[(LEDS_PER_UNI * 4 * kNumOutputs * 3) / 4 + 32];
 int drawingMemory[(LEDS_PER_UNI * 4 * kNumOutputs * 3) / 4 + 32];
 
-int test_brightness = 50; // for test patterns
+int test_brightness = 25; // for test patterns
 
 static inline uint8_t scaleTest(uint8_t v) {
     return (uint16_t(v) * test_brightness) / 255;
@@ -52,8 +52,8 @@ static const uint16_t pollLedDurationMs = 200;
 // ================== HELPERS ==================
 static inline int octoIndex(uint8_t out, uint16_t pixelInStrip)
 {
-    // OctoWS2811 stores pixels interleaved by output
-    return pixelInStrip * kNumOutputs + out;
+    // OctoWS2811_imxrt uses sequential layout: strip i = [i*stripLen .. (i+1)*stripLen)
+    return (int)out * gLedsPerStrip + pixelInStrip;
 }
 
 static int octoConfigFromColorOrder(const String &order)
@@ -83,6 +83,7 @@ static void initOcto()
 
 static void initArtnet()
 {
+    artnet.stop();  // close any existing socket before rebinding
     artnet.begin(); // Ethernet is already up via QNEthernet
     artnet.setBroadcastAuto(Ethernet.localIP(), Ethernet.subnetMask());
 
@@ -169,9 +170,10 @@ struct DipWatcher
             blackoutAll();
 
         // DIP 1–4: IP last octet offset (0..15), add to config base
-        // uint8_t ipOff = dip & 0x0F;
         staticIP = baseIP;
-        staticIP[3] += (dip & 0x0F); // offset safely
+        int lastOctet = (int)baseIP[3] + (int)(dip & 0x0F);
+        if (lastOctet > 254) lastOctet = 254;
+        staticIP[3] = (uint8_t)lastOctet;
 
         // DIP 5–6: Mode
         gMode = static_cast<RunMode>((dip >> 4) & 0x03);
@@ -214,7 +216,6 @@ static void onArtSync(IPAddress)
 
 static void onDmxFrame(uint16_t uni, uint16_t len, uint8_t /*seq*/, uint8_t *data, IPAddress)
 {
-    Serial.printf("Art-Net DMX frame: Uni=%u Len=%u\n", (unsigned)uni, (unsigned)len);
     if (!leds)
         return;
     if (uni < kStartUniverse)
@@ -317,44 +318,21 @@ static void runTestRainbow()
         // gentler spatial variation and slow temporal shift
         uint8_t v = (uint8_t)((p * spatialStride + h) & 255);
 
-        // compact HSV->RGB (value=full, sat=full)
+        // compact HSV->RGB (S=1, V=1), 6 sectors of 43 steps each
         uint8_t region = v / 43, rem = v % 43;
-        uint8_t q = (uint8_t)((255 * (43 - rem)) / 43);
-        uint8_t t = (uint8_t)((255 * rem) / 43);
+        uint8_t q = (uint8_t)((255 * (43 - rem)) / 43); // falling
+        uint8_t t = (uint8_t)((255 * rem) / 43);         // rising
         uint8_t r, g, b;
         switch (region)
         {
-        case 0:
-            r = scaleTest(r);
-            g = t;
-            b = 0;
-            break;
-        case 1:
-            r = q;
-            g = scaleTest(g);
-            b = 0;
-            break;
-        case 2:
-            r = 0;
-            r = scaleTest(g);
-            b = t;
-            break;
-        case 3:
-            r = 0;
-            g = q;
-            r = scaleTest(b);
-            break;
-        case 4:
-            r = t;
-            g = 0;
-            r = scaleTest(b);
-            break;
-        default:
-            r = scaleTest(r);
-            g = 0;
-            b = q;
-            break;
+        case 0:  r = 255; g = t;   b = 0;   break; // red   -> yellow
+        case 1:  r = q;   g = 255; b = 0;   break; // yellow-> green
+        case 2:  r = 0;   g = 255; b = t;   break; // green -> cyan
+        case 3:  r = 0;   g = q;   b = 255; break; // cyan  -> blue
+        case 4:  r = t;   g = 0;   b = 255; break; // blue  -> magenta
+        default: r = 255; g = 0;   b = q;   break; // magenta->red
         }
+        r = scaleTest(r); g = scaleTest(g); b = scaleTest(b);
 
         for (uint8_t o = 0; o < kNumOutputs; ++o)
         {
@@ -377,6 +355,7 @@ void setup()
     }
 
     // Status LEDs
+    ledInit();
     ledWrite(PIN_LED_STATUS, false);
     ledWrite(PIN_LED_DMX, false);
     ledWrite(PIN_LED_POLL, false);
@@ -393,10 +372,10 @@ void setup()
 
     // Initialize subsystems using current config; DIP will immediately re-apply/override
     initDeviceMAC();
-    // initNetwork();
-    initOcto();
-    // initArtnet();
-    // setupWebServer();
+    // initNetwork(), initOcto(), initArtnet(), setupWebServer() are all called by gDip.begin()
+    // below with the correct UPO-derived stripLen. Do NOT call initOcto() here first — it would
+    // set up OctoWS2811's static DMA channels for the wrong strip length and leave stale scatter-
+    // gather state that corrupts strips 4-7 in the subsequent reinit.
 
     // DIP live watcher (applies IP/mode/UPO and re-inits as needed)
     gDip.begin();

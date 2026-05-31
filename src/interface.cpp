@@ -175,20 +175,6 @@ static void serveConfigPage(EthernetClient &client)
     client.print(s);
 }
 
-static void sendRebootRedirect(EthernetClient &client)
-{
-    client.println("HTTP/1.1 200 OK");
-    client.println("Content-Type: text/html; charset=utf-8");
-    client.println("Connection: close");
-    client.println();
-    client.print("<!doctype html><html><head><meta charset='utf-8'><title>Settings Updated</title>");
-    client.print("<script>setTimeout(function(){location.href='http://");
-    client.print(ipToString(staticIP));
-    client.print("/';},15000);</script></head><body>");
-    client.print("<h1>Settings Updated</h1><p>Rebooting to apply new settings...</p>");
-    client.print("<p>You will be redirected automatically.</p></body></html>");
-}
-
 // -------------- HTTP routing ---------------
 void setupWebServer()
 {
